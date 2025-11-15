@@ -24,14 +24,18 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Zip artifact for deployment
+      - name: Create deployment ZIP (clean)
         run: |
-          zip -r release.zip . -x "*.git*" ".github/*" "__pycache__/*" "*.venv/*"
+          mkdir deploy
+          cp -r app deploy/app
+          cp main.py deploy/
+          cp requirements.txt deploy/
+          cd deploy
+          zip -r ../release.zip .
 
       - name: Deploy to Azure Web App
-        uses: azure/webapps-deploy@v2
+        uses: azure/webapps-deploy@v3
         with:
           app-name: obasemarket
-          slot-name: production
           publish-profile: ${{ secrets.AZURE_WEBAPP_PUBLISH_PROFILE }}
           package: release.zip
