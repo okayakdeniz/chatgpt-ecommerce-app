@@ -36,10 +36,8 @@ mcp = FastMCP(
 # FastMCP'nin kendi ASGI app'i
 mcp_app = mcp.http_app(path="/mcp")
 
-# Lifespan'i FastAPI'ye geçir
 app.router.routes.extend(mcp_app.routes)  # MCP route'larını ana app'e ekle
 
-# MCP tool/resource handler'larını kayıt et
 register_mcp(mcp)
 
 # ---------------------------------------------------------
