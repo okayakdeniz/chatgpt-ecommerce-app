@@ -6,19 +6,20 @@ from fastapi import FastAPI
 # MCP server
 mcp = FastMCP(
     name="ecommerce-mcp",
-    sse_path="/mcp",
+    sse_path="/mcp/sse",
     message_path="/mcp/messages",
     stateless_http=True
 )
 
-# FastAPI app
+# FastAPI ana app
 app = FastAPI()
 
-# MCP Streamable HTTP mount
+# MCP Streamable HTTP uygulamasını mount et
+# ÖNEMLİ: "/" DEĞİL! Çünkü "/" olursa tüm FastAPI route'larını override eder.
 mcp_app = mcp.streamable_http_app()
-app.mount("/", mcp_app)
+app.mount("/mcp", mcp_app)
 
-# OAuth + OIDC endpointleri mount et
+# OAuth + API endpoint'lerini kaydet
 register_api_routes(app)
 
 # MCP tool + resource kayıtları
