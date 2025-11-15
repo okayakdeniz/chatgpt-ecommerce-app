@@ -1,0 +1,274 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Mini E-Ticaret</title>
+    <style>
+      body {
+        font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        margin: 0;
+        padding: 12px;
+        background: #f5f5f7;
+        color: #111827;
+      }
+      h1 {
+        font-size: 18px;
+        margin-bottom: 8px;
+      }
+      .layout {
+        display: grid;
+        grid-template-columns: 2fr 1fr;
+        gap: 12px;
+      }
+      .panel {
+        background: #ffffff;
+        border-radius: 10px;
+        padding: 10px 12px;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+      }
+      .panel-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 8px;
+      }
+      .products, .cart-items {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+      }
+      .product, .cart-item {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 8px;
+        padding: 8px;
+        border-radius: 8px;
+        background: #f9fafb;
+      }
+      .product-info, .cart-info {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+      }
+      .title {
+        font-size: 14px;
+        font-weight: 600;
+      }
+      .subtitle {
+        font-size: 12px;
+        color: #6b7280;
+      }
+      .price {
+        font-size: 13px;
+        font-weight: 600;
+      }
+      .btn {
+        border: none;
+        border-radius: 999px;
+        font-size: 12px;
+        padding: 6px 10px;
+        cursor: pointer;
+        background: #111827;
+        color: white;
+      }
+      .btn.secondary {
+        background: #e5e7eb;
+        color: #111827;
+      }
+      .btn.danger {
+        background: #b91c1c;
+        color: #f9fafb;
+      }
+      .btn:disabled {
+        opacity: 0.5;
+        cursor: default;
+      }
+      .search-bar {
+        display: flex;
+        gap: 6px;
+        width: 100%;
+      }
+      .search-bar input {
+        flex: 1;
+        border-radius: 999px;
+        border: 1px solid #d1d5db;
+        padding: 6px 10px;
+        font-size: 12px;
+      }
+      .total-row {
+        display: flex;
+        justify-content: space-between;
+        margin-top: 8px;
+        font-size: 13px;
+        font-weight: 600;
+      }
+      .status {
+        margin-top: 6px;
+        font-size: 11px;
+        color: #6b7280;
+      }
+      @media (max-width: 768px) {
+        .layout {
+          grid-template-columns: 1fr;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Mini E-Ticaret Widget</h1>
+    <div class="layout">
+      <div class="panel">
+        <div class="panel-header">
+          <span>Ürünler</span>
+        </div>
+        <div class="search-bar">
+          <input id="search-input" placeholder="Örn: laptop, kulaklık..." />
+          <button class="btn" id="search-btn">Ara</button>
+        </div>
+        <div id="products" class="products" style="margin-top: 8px;"></div>
+      </div>
+      <div class="panel">
+        <div class="panel-header">
+          <span>Sepet</span>
+          <button class="btn secondary" id="refresh-cart-btn">Sepeti Göster</button>
+        </div>
+        <div id="cart" class="cart-items"></div>
+        <div class="total-row" id="cart-summary"></div>
+        <div style="margin-top: 8px; display:flex; gap:6px;">
+          <button class="btn danger" id="checkout-btn">Ödeme Yap (Mock)</button>
+        </div>
+        <div class="status" id="status"></div>
+      </div>
+    </div>
+
+    <script type="module">
+      function getToolOutput() {
+        return window.openai?.toolOutput || {};
+      }
+
+      function render() {
+        const state = getToolOutput();
+        const products = state.products || [];
+        const cart = state.cart || { items: [], totalAmount: 0, totalQuantity: 0 };
+        const lastAction = state.lastAction || null;
+
+        const productsRoot = document.getElementById("products");
+        const cartRoot = document.getElementById("cart");
+        const cartSummary = document.getElementById("cart-summary");
+        const status = document.getElementById("status");
+
+        productsRoot.innerHTML = "";
+        cartRoot.innerHTML = "";
+        cartSummary.innerHTML = "";
+
+        products.forEach((p) => {
+          const el = document.createElement("div");
+          el.className = "product";
+
+          const info = document.createElement("div");
+          info.className = "product-info";
+          info.innerHTML = `
+            <span class="title">${p.name}</span>
+            <span class="subtitle">${p.description || ""}</span>
+          `;
+
+          const right = document.createElement("div");
+          const price = document.createElement("div");
+          price.className = "price";
+          price.textContent = p.priceFormatted || (p.price + " ₺");
+
+          const btn = document.createElement("button");
+          btn.className = "btn";
+          btn.textContent = "Sepete Ekle";
+          btn.onclick = async () => {
+            await window.openai?.callTool("add_to_cart", {
+              productId: p.id,
+              quantity: 1,
+            });
+          };
+
+          right.style.display = "flex";
+          right.style.flexDirection = "column";
+          right.style.alignItems = "flex-end";
+          right.style.gap = "4px";
+          right.appendChild(price);
+          right.appendChild(btn);
+
+          el.appendChild(info);
+          el.appendChild(right);
+          productsRoot.appendChild(el);
+        });
+
+        (cart.items || []).forEach((item) => {
+          const el = document.createElement("div");
+          el.className = "cart-item";
+
+          const info = document.createElement("div");
+          info.className = "cart-info";
+          info.innerHTML = `
+            <span class="title">${item.name}</span>
+            <span class="subtitle">Adet: ${item.quantity}</span>
+          `;
+
+          const right = document.createElement("div");
+          right.style.display = "flex";
+          right.style.flexDirection = "column";
+          right.style.alignItems = "flex-end";
+          right.style.gap = "4px";
+
+          const price = document.createElement("div");
+          price.className = "price";
+          price.textContent = item.subtotalFormatted || (item.subtotal + " ₺");
+
+          const btn = document.createElement("button");
+          btn.className = "btn secondary";
+          btn.textContent = "Çıkar";
+          btn.onclick = async () => {
+            await window.openai?.callTool("remove_from_cart", {
+              productId: item.id,
+            });
+          };
+
+          right.appendChild(price);
+          right.appendChild(btn);
+          el.appendChild(info);
+          el.appendChild(right);
+          cartRoot.appendChild(el);
+        });
+
+        cartSummary.textContent =
+          cart.totalQuantity > 0
+            ? `Toplam ${cart.totalQuantity} ürün • ${cart.totalAmountFormatted || (cart.totalAmount + " ₺")}`
+            : "";
+
+        if (lastAction && lastAction.message) {
+          status.textContent = lastAction.message;
+        } else {
+          status.textContent = "";
+        }
+      }
+
+      document.getElementById("search-btn").onclick = async () => {
+        const q = (document.getElementById("search-input").value || "").trim();
+        await window.openai?.callTool("search_products", { query: q });
+      };
+
+      document.getElementById("refresh-cart-btn").onclick = async () => {
+        await window.openai?.callTool("get_cart", {});
+      };
+
+      document.getElementById("checkout-btn").onclick = async () => {
+        await window.openai?.callTool("checkout", {
+          paymentMethod: "mock",
+        });
+      };
+
+      render();
+
+      window.addEventListener("openai:set_globals", () => {
+        render();
+      });
+    </script>
+  </body>
+</html>

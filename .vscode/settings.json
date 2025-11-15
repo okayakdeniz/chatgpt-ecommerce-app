@@ -1,0 +1,10 @@
+{
+  "appService.deploySubpath": ".",
+  "appService.defaultWebAppToDeploy": "/subscriptions/cc0d32a3-c57a-4173-9fe4-12e59c035510/resourceGroups/showcase/providers/Microsoft.Web/sites/showcase",
+  "appService.zipIgnorePattern": [
+    ".venv{,/**}",
+    "env{,/**}",
+    "venv{,/**}",
+    "__pycache__{,/**}"
+  ]
+}
