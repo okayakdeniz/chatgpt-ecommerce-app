@@ -1,39 +1,46 @@
-name: Deploy to Azure Web App
+name: Deploy Python FastAPI MCP App to Azure
 
 on:
   push:
     branches:
       - main
+  workflow_dispatch:
 
-permissions:
-  id-token: write
-  contents: read
+env:
+  AZURE_WEBAPP_NAME: obasemarket        # Web App adın
+  PYTHON_VERSION: '3.11'
 
 jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
 
     steps:
-    - name: Checkout Repository
-      uses: actions/checkout@v3
+    - name: Checkout source code
+      uses: actions/checkout@v4
 
-    # Python kur
-    - name: Setup Python
-      uses: actions/setup-python@v5
+    - name: Set up Python
+      uses: actions/setup-python@v4
       with:
-        python-version: "3.11"
+        python-version: ${{ env.PYTHON_VERSION }}
 
-    # Paketleri yükle
-    - name: Install Dependencies
+    - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
         pip install -r requirements.txt
 
-    # Azure Web App'a deploy
-    - name: "Deploy to Azure Web App"
+    - name: Zip artifact for deployment
+      run: |
+        zip -r release.zip . -x "*.git*"
+
+    - name: Upload artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: python-app
+        path: release.zip
+
+    - name: Deploy to Azure Web App
       uses: azure/webapps-deploy@v3
       with:
-        app-name: obasemarket
-        slot-name: production
-        publish-profile: ${{ secrets.AZURE_PUBLISH_PROFILE }}
-        package: .
+        app-name: ${{ env.AZURE_WEBAPP_NAME }}
+        publish-profile: ${{ secrets.AZURE_WEBAPP_PUBLISH_PROFILE }}
+        package: release.zip
