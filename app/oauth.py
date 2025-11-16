@@ -3,8 +3,8 @@ import uuid
 import time
 import base64
 
-from starlette.responses import JSONResponse, RedirectResponse, PlainTextResponse
-from starlette.requests import Request
+from fastapi import Request, Form
+from fastapi.responses import JSONResponse, RedirectResponse, PlainTextResponse
 
 from .config import BASE_URL, RESOURCE_ID
 
@@ -17,41 +17,31 @@ AUTH_CODES: dict[str, dict] = {}
 # Access token store (token → client_id, resource, scopes, expires_at)
 TOKENS: dict[str, dict] = {}
 
-
 def _b64url_random() -> str:
     return base64.urlsafe_b64encode(uuid.uuid4().bytes).decode().rstrip("=")
 
 
 def register_oauth_routes(app):
     """
-    Tüm OAuth/MCP auth endpointlerini tek fonksiyonda FastAPI/Starlette app'ine ekler.
-    OpenAI Apps SDK 'Authentication' dokümanındaki MCP authorization spec'e göre hazırlanmıştır.
+    OAuth/MCP auth endpointlerini FastAPI app'ine ekler.
     """
 
     # -----------------------------------------------------
     # 0) Protected Resource Metadata
-    #    GET /.well-known/oauth-protected-resource
     # -----------------------------------------------------
-    @app.route("/.well-known/oauth-protected-resource", methods=["GET"])
-    async def protected_resource_metadata(request: Request):
-        """
-        ChatGPT, MCP server'ının hangi authorization server'ları kullandığını
-        ve hangi scopes'ları desteklediğini buradan öğrenir.
-        """
+    @app.get("/.well-known/oauth-protected-resource")
+    async def protected_resource_metadata():
         return JSONResponse(
             {
                 "resource": RESOURCE_ID,
                 "authorization_servers": [BASE_URL],
                 "scopes_supported": ["mcp"],
-                # İstersen belgelendirme sayfan varsa:
                 "resource_documentation": f"{BASE_URL}/docs",
             }
         )
 
     # -----------------------------------------------------
     # 1) Authorization Server Metadata
-    #    GET /.well-known/oauth-authorization-server
-    #    GET /.well-known/openid-configuration
     # -----------------------------------------------------
     def _oauth_metadata_body():
         return {
@@ -59,32 +49,27 @@ def register_oauth_routes(app):
             "authorization_endpoint": f"{BASE_URL}/oauth/authorize",
             "token_endpoint": f"{BASE_URL}/oauth/token",
             "registration_endpoint": f"{BASE_URL}/register",
-            # JWT üretmiyoruz ama spec gereği bir jwks_uri göstermek faydalı;
-            # ChatGPT bunu doğrulamak zorunda değil, token doğrulama işi MCP server'da.
             "jwks_uri": f"{BASE_URL}/oauth/jwks.json",
-            "code_challenge_methods_supported": ["S256"],  # PKCE şart
+            "code_challenge_methods_supported": ["S256"],
             "scopes_supported": ["mcp"],
         }
 
-    @app.route("/.well-known/oauth-authorization-server", methods=["GET"])
-    async def oauth_server_metadata(request: Request):
+    @app.get("/.well-known/oauth-authorization-server")
+    async def oauth_server_metadata():
         return JSONResponse(_oauth_metadata_body())
 
-    @app.route("/.well-known/openid-configuration", methods=["GET"])
-    async def oidc_config(request: Request):
-        # Aynı içeriği OIDC discovery için de sunuyoruz.
+    @app.get("/.well-known/openid-configuration")
+    async def oidc_config():
         return JSONResponse(_oauth_metadata_body())
 
-    # JWKS dummy endpoint (gerekirse gerçek key eklenebilir)
-    @app.route("/oauth/jwks.json", methods=["GET"])
-    async def jwks(request: Request):
+    @app.get("/oauth/jwks.json")
+    async def jwks():
         return JSONResponse({"keys": []})
 
     # -----------------------------------------------------
     # 2) Dynamic Client Registration (RFC 7591)
-    #    POST /register
     # -----------------------------------------------------
-    @app.route("/register", methods=["POST"])
+    @app.post("/register")
     async def register_client(request: Request):
         payload = await request.json()
         redirect_uris = payload.get("redirect_uris", [])
@@ -111,32 +96,17 @@ def register_oauth_routes(app):
         )
 
     # -----------------------------------------------------
-    # 3) Authorization Endpoint (Authorization Code + PKCE)
-    #    GET /oauth/authorize
+    # 3) Authorization Endpoint
     # -----------------------------------------------------
-    @app.route("/oauth/authorize", methods=["GET"])
+    @app.get("/oauth/authorize")
     async def oauth_authorize(request: Request):
-        """
-        ChatGPT bu endpoint'e:
-          response_type=code
-          client_id=...
-          redirect_uri=...
-          state=...
-          scope=...
-          resource=...
-          code_challenge=...
-          code_challenge_method=S256
-        ile gelir.
-
-        Biz burada user UI göstermeden otomatik onay veriyoruz ve authorization code üretiyoruz.
-        """
         qp = request.query_params
 
         client_id = qp.get("client_id")
         redirect_uri = qp.get("redirect_uri")
         state = qp.get("state")
         scope = qp.get("scope", "mcp")
-        resource = qp.get("resource")  # Örn: https://obasemarket.azurewebsites.net
+        resource = qp.get("resource")
         code_challenge = qp.get("code_challenge")
         code_challenge_method = qp.get("code_challenge_method")
 
@@ -156,10 +126,10 @@ def register_oauth_routes(app):
             "scope": scope,
             "code_challenge": code_challenge,
             "code_challenge_method": code_challenge_method,
-            "expires_at": time.time() + 300,  # 5 dk
+            "expires_at": time.time() + 300,
         }
 
-        # Kullanıcı onayı burada mock: otomatik kabul
+        # Otomatik onay
         redirect_with_code = f"{redirect_uri}?code={code}"
         if state:
             redirect_with_code += f"&state={state}"
@@ -168,24 +138,19 @@ def register_oauth_routes(app):
 
     # -----------------------------------------------------
     # 4) Token Endpoint
-    #    POST /oauth/token
     # -----------------------------------------------------
-    @app.route("/oauth/token", methods=["POST"])
-    async def oauth_token(request: Request):
-        form = await request.form()
-        grant_type = form.get("grant_type")
-
-        # -----------------------------
+    @app.post("/oauth/token")
+    async def oauth_token(
+        grant_type: str = Form(...),
+        code: str = Form(None),
+        client_id: str = Form(None),
+        client_secret: str = Form(None),
+        redirect_uri: str = Form(None),
+        resource: str = Form(None),
+        code_verifier: str = Form(None),
+    ):
         # Authorization Code Flow
-        # -----------------------------
         if grant_type == "authorization_code":
-            code = form.get("code")
-            client_id = form.get("client_id")
-            client_secret = form.get("client_secret")
-            redirect_uri = form.get("redirect_uri")
-            resource = form.get("resource")
-            code_verifier = form.get("code_verifier")  # PKCE - şu an doğrulamıyoruz (demo)
-
             if not client_id or client_id not in CLIENTS:
                 return JSONResponse({"error": "invalid_client"}, status_code=401)
 
@@ -206,10 +171,6 @@ def register_oauth_routes(app):
             if time.time() > auth_data["expires_at"]:
                 return JSONResponse({"error": "expired_code"}, status_code=400)
 
-            # resource paramının echo’su (isteğe bağlı sıkı doğrulama)
-            if resource and auth_data.get("resource") and resource != auth_data["resource"]:
-                return JSONResponse({"error": "invalid_target"}, status_code=400)
-
             # Access token üret
             token = _b64url_random()
             TOKENS[token] = {
@@ -228,13 +189,8 @@ def register_oauth_routes(app):
                 }
             )
 
-        # -----------------------------
-        # Client Credentials Flow (opsiyonel)
-        # -----------------------------
+        # Client Credentials Flow
         elif grant_type == "client_credentials":
-            client_id = form.get("client_id")
-            client_secret = form.get("client_secret")
-
             if not client_id or client_id not in CLIENTS:
                 return JSONResponse({"error": "invalid_client"}, status_code=401)
 
