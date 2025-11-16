@@ -1,6 +1,6 @@
 from mcp.server.fastmcp import FastMCP
 import mcp.types as types
-from .widget import widget, widget_meta
+from .widget import widget
 from .catalog import search_catalog
 from .cart import CART, build_cart_summary
 
