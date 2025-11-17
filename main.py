@@ -34,10 +34,14 @@ register_mcp(mcp)
 register_api_routes(app)
 
 # Debug
+APP_VERSION = "1.0.1"  # Her değişiklikte manuel olarak güncellersiniz
+
 @app.get("/__routes__")
 async def debug_routes():
-    return [route.path for route in app.router.routes]
-
+    return {
+        "version": APP_VERSION,
+        "routes": [route.path for route in app.router.routes]
+    }
 
 if __name__ == "__main__":
     import uvicorn, os
