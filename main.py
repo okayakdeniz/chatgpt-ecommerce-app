@@ -4,31 +4,38 @@ from mcp.server.fastmcp import FastMCP
 from app.routes import register_api_routes
 from app.mcp_handlers import register_mcp
 
+# FastAPI Ana App
 app = FastAPI()
 
-# MCP Sunucusu
+# MCP Server
 mcp = FastMCP(
     name="ecommerce-mcp",
-    sse_path="/sse",
-    message_path="/messages",
+    sse_path="/mcp/sse",
+    message_path="/mcp/messages",
     stateless_http=True
 )
 
-# MCP HTTP uygulaması
+# MCP alt uygulaması
 mcp_app = mcp.streamable_http_app()
 
-# /mcp altında mount et
-app.mount("/mcp", mcp_app)
+# ==============================================================
+# *** KRİTİK DÜZELTME ***
+# Azure WEBSITES mount edilen alt uygulamaların route'larını drop ediyor.
+# Bu yüzden MCP'nin route'larını MANUEL olarak FastAPI ana app'e kopyalıyoruz.
+# ==============================================================
 
-# MCP tool kayıtları
+for route in mcp_app.router.routes:
+    app.router.routes.append(route)
+
+# MCP Tool kayıtları
 register_mcp(mcp)
 
-# Normal API kayıtları
+# Diğer API route’ları
 register_api_routes(app)
 
 # Debug
 @app.get("/__routes__")
-async def routes():
+async def debug_routes():
     return [route.path for route in app.router.routes]
 
 
