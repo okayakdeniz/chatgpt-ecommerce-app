@@ -1,0 +1,26 @@
+{
+  "schema_version": "v1",
+  "name_for_human": "ObaseMarket",
+  "name_for_model": "obase_market",
+  "description_for_human": "ObaseMarket ürünlerini arayın, sepete ekleyin, görüntüleyin ve sipariş verin.",
+  "description_for_model": "E-commerce actions: search products, manage cart, checkout. Use this API to perform product search, add/remove items, show cart, and complete orders.",
+  "auth": {
+    "type": "oauth",
+    "client_url": "https://obasemarket.azurewebsites.net/register",
+    "scope": "mcp",
+    "authorization_url": "https://obasemarket.azurewebsites.net/oauth/authorize",
+    "authorization_content_type": "application/x-www-form-urlencoded",
+    "token_url": "https://obasemarket.azurewebsites.net/oauth/token",
+    "token_content_type": "application/x-www-form-urlencoded",
+    "redirect_urls": [
+      "https://oauth.openai.com/v1/callback"
+    ]
+  },
+  "api": {
+    "type": "openapi",
+    "url": "https://obasemarket.azurewebsites.net/openapi.json"
+  },
+  "logo_url": "https://obasemarket.azurewebsites.net/logo.png",
+  "contact_email": "support@obasemarket.com",
+  "legal_info_url": "https://obasemarket.azurewebsites.net/legal"
+}
