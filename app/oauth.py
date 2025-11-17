@@ -2,19 +2,17 @@
 import uuid
 import time
 import base64
+import logging
 
-from fastapi import Request, Form
+from fastapi import Request, Form, HTTPException
 from fastapi.responses import JSONResponse, RedirectResponse, PlainTextResponse
 
 from .config import BASE_URL, RESOURCE_ID
 
-# Kayıt olan clientlar (client_id → client_info)
+logger = logging.getLogger(__name__)
+
 CLIENTS: dict[str, dict] = {}
-
-# Authorization kodları (code → client_id, redirect_uri, resource, ...)
 AUTH_CODES: dict[str, dict] = {}
-
-# Access token store (token → client_id, resource, scopes, expires_at)
 TOKENS: dict[str, dict] = {}
 
 def _b64url_random() -> str:
@@ -22,13 +20,7 @@ def _b64url_random() -> str:
 
 
 def register_oauth_routes(app):
-    """
-    OAuth/MCP auth endpointlerini FastAPI app'ine ekler.
-    """
 
-    # -----------------------------------------------------
-    # 0) Protected Resource Metadata
-    # -----------------------------------------------------
     @app.get("/.well-known/oauth-protected-resource")
     async def protected_resource_metadata():
         return JSONResponse(
@@ -36,13 +28,11 @@ def register_oauth_routes(app):
                 "resource": RESOURCE_ID,
                 "authorization_servers": [BASE_URL],
                 "scopes_supported": ["mcp"],
+                "bearer_methods_supported": ["header"],
                 "resource_documentation": f"{BASE_URL}/docs",
             }
         )
 
-    # -----------------------------------------------------
-    # 1) Authorization Server Metadata
-    # -----------------------------------------------------
     def _oauth_metadata_body():
         return {
             "issuer": BASE_URL,
@@ -52,6 +42,9 @@ def register_oauth_routes(app):
             "jwks_uri": f"{BASE_URL}/oauth/jwks.json",
             "code_challenge_methods_supported": ["S256"],
             "scopes_supported": ["mcp"],
+            "response_types_supported": ["code"],
+            "grant_types_supported": ["authorization_code", "client_credentials"],
+            "token_endpoint_auth_methods_supported": ["client_secret_post"],
         }
 
     @app.get("/.well-known/oauth-authorization-server")
@@ -66,9 +59,6 @@ def register_oauth_routes(app):
     async def jwks():
         return JSONResponse({"keys": []})
 
-    # -----------------------------------------------------
-    # 2) Dynamic Client Registration (RFC 7591)
-    # -----------------------------------------------------
     @app.post("/register")
     async def register_client(request: Request):
         payload = await request.json()
@@ -83,6 +73,8 @@ def register_oauth_routes(app):
             "redirect_uris": redirect_uris,
         }
 
+        logger.info(f"New client registered: {client_id}")
+
         return JSONResponse(
             {
                 "client_id": client_id,
@@ -95,9 +87,6 @@ def register_oauth_routes(app):
             }
         )
 
-    # -----------------------------------------------------
-    # 3) Authorization Endpoint
-    # -----------------------------------------------------
     @app.get("/oauth/authorize")
     async def oauth_authorize(request: Request):
         qp = request.query_params
@@ -110,14 +99,14 @@ def register_oauth_routes(app):
         code_challenge = qp.get("code_challenge")
         code_challenge_method = qp.get("code_challenge_method")
 
+        logger.info(f"Authorization request from client: {client_id}")
+
         if not client_id or client_id not in CLIENTS:
             return PlainTextResponse("invalid client_id", status_code=400)
 
-        registered_redirects = CLIENTS[client_id]["redirect_uris"]
-        if redirect_uri not in registered_redirects:
+        if redirect_uri not in CLIENTS[client_id]["redirect_uris"]:
             return PlainTextResponse("invalid redirect_uri", status_code=400)
 
-        # Authorization code üret
         code = _b64url_random()
         AUTH_CODES[code] = {
             "client_id": client_id,
@@ -129,16 +118,13 @@ def register_oauth_routes(app):
             "expires_at": time.time() + 300,
         }
 
-        # Otomatik onay
         redirect_with_code = f"{redirect_uri}?code={code}"
         if state:
             redirect_with_code += f"&state={state}"
 
+        logger.info(f"Authorization code generated for client: {client_id}")
         return RedirectResponse(redirect_with_code)
 
-    # -----------------------------------------------------
-    # 4) Token Endpoint
-    # -----------------------------------------------------
     @app.post("/oauth/token")
     async def oauth_token(
         grant_type: str = Form(...),
@@ -149,7 +135,8 @@ def register_oauth_routes(app):
         resource: str = Form(None),
         code_verifier: str = Form(None),
     ):
-        # Authorization Code Flow
+        logger.info(f"Token request: grant_type={grant_type}, client_id={client_id}")
+
         if grant_type == "authorization_code":
             if not client_id or client_id not in CLIENTS:
                 return JSONResponse({"error": "invalid_client"}, status_code=401)
@@ -171,7 +158,6 @@ def register_oauth_routes(app):
             if time.time() > auth_data["expires_at"]:
                 return JSONResponse({"error": "expired_code"}, status_code=400)
 
-            # Access token üret
             token = _b64url_random()
             TOKENS[token] = {
                 "client_id": client_id,
@@ -179,6 +165,8 @@ def register_oauth_routes(app):
                 "scope": auth_data.get("scope", "mcp"),
                 "expires_at": time.time() + 3600,
             }
+
+            logger.info(f"Access token generated for client: {client_id}")
 
             return JSONResponse(
                 {
@@ -189,7 +177,6 @@ def register_oauth_routes(app):
                 }
             )
 
-        # Client Credentials Flow
         elif grant_type == "client_credentials":
             if not client_id or client_id not in CLIENTS:
                 return JSONResponse({"error": "invalid_client"}, status_code=401)
@@ -205,6 +192,8 @@ def register_oauth_routes(app):
                 "expires_at": time.time() + 3600,
             }
 
+            logger.info(f"Access token generated (client_credentials) for client: {client_id}")
+
             return JSONResponse(
                 {
                     "access_token": token,
@@ -215,3 +204,59 @@ def register_oauth_routes(app):
             )
 
         return JSONResponse({"error": "unsupported_grant_type"}, status_code=400)
+
+
+# ======================================================
+# OAuth Token Verifier for MCP
+# ======================================================
+from mcp.server.auth.provider import TokenVerifier as MCPTokenVerifier
+
+class CustomTokenVerifier(MCPTokenVerifier):
+
+    async def verify_token(self, token: str) -> dict:
+        logger.warning("MCP → verify_token() çağrıldı")      # ← EKLENDİ
+        logger.info(f"Verifying token: {token[:20] if token else 'None'}...")
+
+        # Token yoksa → OAuth discovery başlasın
+        if not token or token not in TOKENS:
+            logger.warning("MCP → verify_token(): token bulunamadı, 401 dönüyor")   # ← EKLENDİ
+            raise HTTPException(
+                status_code=401,
+                detail={
+                    "error": "invalid_token",
+                    "error_description": "Authentication required",
+                },
+                headers={
+                    "WWW-Authenticate": (
+                        f'Bearer resource_metadata="{BASE_URL}/.well-known/oauth-protected-resource"'
+                    )
+                },
+            )
+
+        token_data = TOKENS[token]
+
+        # Süresi geçmiş token
+        if time.time() > token_data["expires_at"]:
+            logger.warning("MCP → verify_token(): token expired")   # ← EKLENDİ
+            del TOKENS[token]
+            raise HTTPException(
+                status_code=401,
+                detail={
+                    "error": "invalid_token",
+                    "error_description": "Token expired",
+                },
+                headers={
+                    "WWW-Authenticate": (
+                        f'Bearer resource_metadata="{BASE_URL}/.well-known/oauth-protected-resource"'
+                    )
+                },
+            )
+
+        logger.warning("MCP → verify_token(): token doğrulandı")   # ← EKLENDİ
+
+        return {
+            "sub": token_data["client_id"],
+            "scope": token_data["scope"],
+            "resource": token_data.get("resource"),
+            "client_id": token_data["client_id"]
+        }
