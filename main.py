@@ -1,47 +1,48 @@
 from fastapi import FastAPI
-from mcp.server.fastmcp import FastMCP
+from fastmcp import FastMCP
 
 from app.routes import register_api_routes
 from app.mcp_handlers import register_mcp
 
-# FastAPI Ana App
-app = FastAPI()
+# --------------------------------------------------------
+# 1) Normal API
+# --------------------------------------------------------
 
-# MCP Server
-mcp = FastMCP(
-    name="ecommerce-mcp",
-    sse_path="/mcp/sse",
-    message_path="/mcp/messages",
-    stateless_http=True
-)
+api = FastAPI()
+register_api_routes(api)
 
-# MCP alt uygulaması
-mcp_app = mcp.streamable_http_app()
+# --------------------------------------------------------
+# 2) MCP Server FastAPI Üzerine Eklenir
+# --------------------------------------------------------
 
-# ==============================================================
-# *** KRİTİK DÜZELTME ***
-# Azure WEBSITES mount edilen alt uygulamaların route'larını drop ediyor.
-# Bu yüzden MCP'nin route'larını MANUEL olarak FastAPI ana app'e kopyalıyoruz.
-# ==============================================================
+mcp = FastMCP.from_fastapi(api)
 
-for route in mcp_app.router.routes:
-    app.router.routes.append(route)
-
-# MCP Tool kayıtları
+# MCP tool'larını ekle
 register_mcp(mcp)
 
-# Diğer API route’ları
-register_api_routes(app)
+# MCP'nin kendi http_app'i
+mcp_app = mcp.http_app(path="/mcp")
 
-# Debug
-APP_VERSION = "1.0.1"  # Her değişiklikte manuel olarak güncellersiniz
+# --------------------------------------------------------
+# 3) ANA APP = MCP + API ROUTELARI BİR ARADA
+# --------------------------------------------------------
+
+app = FastAPI(
+    title="Obase Market MCP Server",
+    routes=[
+        *mcp_app.routes,   # /mcp/sse ve /mcp/messages buradan gelir
+        *api.routes,       # /api/... ve OAuth buradan gelir
+    ]
+)
+
+# --------------------------------------------------------
+# 4) Debug routes
+# --------------------------------------------------------
 
 @app.get("/__routes__")
-async def debug_routes():
-    return {
-        "version": APP_VERSION,
-        "routes": [route.path for route in app.router.routes]
-    }
+async def list_routes():
+    return [route.path for route in app.router.routes]
+
 
 if __name__ == "__main__":
     import uvicorn, os
