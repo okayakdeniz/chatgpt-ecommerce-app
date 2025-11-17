@@ -24,77 +24,27 @@ logger = logging.getLogger(__name__)
 # ======================================================
 app = FastAPI(title="Ecommerce MCP Server")
 
-# ======================================================
-# OAuth Routes (ChatGPT uyumlu)
-# ======================================================
 register_oauth_routes(app)
 
-# ======================================================
-# MCP Auth Settings
-# ======================================================
-auth_settings = AuthSettings(
-    issuer_url=BASE_URL,
-    resource_server_url=BASE_URL,
-)
-
-# ======================================================
-# MCP Server
-# ======================================================
-mcp = FastMCP(
-    name="ecommerce-mcp",
-    token_verifier=CustomTokenVerifier(),
-    auth=auth_settings,
-)
+mcp = FastMCP(name="ecommerce-mcp")
 
 # Tool kayıtları
 register_mcp(mcp)
+sse_app = mcp.create_sse_app()
 
-# ======================================================
-# Mount SSE transport
-# ======================================================
-# ChatGPT connector’ın bağlanacağı yer:
-#   GET  /mcp/sse
-#   POST /mcp/messages
-app.mount("/mcp", mcp.sse_app())
+
+app.mount("/mcp", sse_app)
 
 # ======================================================
 # Debug routes
 # ======================================================
-APP_VERSION = "2.0.0"
+APP_VERSION = "3.0.0"
 
 @app.get("/__routes__")
 async def debug_routes():
     return {
         "version": APP_VERSION,
         "routes": [route.path for route in app.router.routes]
-    }
-
-
-@app.get("/__debug/tokens")
-async def debug_tokens():
-    """Access token store'u gösterir."""
-    from app.oauth import TOKENS
-    return {
-        "token_count": len(TOKENS),
-        "tokens": [
-            {
-                "token": token[:16] + "...",
-                "client_id": data["client_id"],
-                "scope": data["scope"],
-                "expires_in": int(data["expires_at"] - time.time())
-            }
-            for token, data in TOKENS.items()
-        ]
-    }
-
-
-@app.get("/__debug/clients")
-async def debug_clients():
-    """Kayıtlı client'lar."""
-    from app.oauth import CLIENTS
-    return {
-        "client_count": len(CLIENTS),
-        "clients": CLIENTS
     }
 
 # ======================================================
