@@ -50,9 +50,15 @@ app.mount("/mcp", mcp.sse_app())
 # ======================================================
 # Debug endpoints
 # ======================================================
+APP_VERSION = "1.0.1"
+
 @app.get("/__routes__")
 async def debug_routes():
-    return [route.path for route in app.router.routes]
+    return {
+        "version": APP_VERSION,
+        "routes": [route.path for route in app.router.routes]
+    }
+
 
 @app.get("/__debug/tokens")
 async def debug_tokens():
