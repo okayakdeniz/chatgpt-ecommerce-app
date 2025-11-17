@@ -6,8 +6,8 @@ from fastapi import FastAPI
 # MCP server
 mcp = FastMCP(
     name="ecommerce-mcp",
-    sse_path="/mcp/sse",
-    message_path="/mcp/messages",
+    sse_path="/sse",
+    message_path="/messages",
     stateless_http=True
 )
 
