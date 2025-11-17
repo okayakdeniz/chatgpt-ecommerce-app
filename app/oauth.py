@@ -2,25 +2,86 @@
 import uuid
 import time
 import base64
-import logging
+import hashlib
+from typing import Dict, Any, Optional
 
-from fastapi import Request, Form, HTTPException
+from fastapi import FastAPI, Request, Form
 from fastapi.responses import JSONResponse, RedirectResponse, PlainTextResponse
 
 from .config import BASE_URL, RESOURCE_ID
 
-logger = logging.getLogger(__name__)
+# Kayıt olan client'lar (client_id → client_info)
+CLIENTS: Dict[str, Dict[str, Any]] = {}
 
-CLIENTS: dict[str, dict] = {}
-AUTH_CODES: dict[str, dict] = {}
-TOKENS: dict[str, dict] = {}
+# Authorization kodları (code → auth_data)
+AUTH_CODES: Dict[str, Dict[str, Any]] = {}
+
+# Access token store (token → token_data)
+TOKENS: Dict[str, Dict[str, Any]] = {}
+
+
+# ============================================================
+# Yardımcı fonksiyonlar
+# ============================================================
 
 def _b64url_random() -> str:
+    """Base64 URL-safe random string üretir (token ve code için)."""
     return base64.urlsafe_b64encode(uuid.uuid4().bytes).decode().rstrip("=")
 
 
-def register_oauth_routes(app):
+def _pkce_s256(verifier: str) -> str:
+    """PKCE S256 code_challenge hesaplaması."""
+    digest = hashlib.sha256(verifier.encode("ascii")).digest()
+    return base64.urlsafe_b64encode(digest).decode().rstrip("=")
 
+
+def _now() -> float:
+    return time.time()
+
+
+# ============================================================
+# Token doğrulayıcı (MCP tarafında kullanılacak)
+# ============================================================
+
+class CustomTokenVerifier:
+    """
+    FastMCP gibi bir MCP server'ın kullanacağı token doğrulayıcı.
+
+    verify(token) metodu:
+    - Geçerli bir access_token bulunursa, token metadata döner
+    - Geçersiz veya süresi dolmuşsa None döner
+    """
+
+    async def verify(self, token: str) -> Optional[Dict[str, Any]]:
+        token_data = TOKENS.get(token)
+        if not token_data:
+            return None
+
+        if token_data.get("expires_at", 0) < _now():
+            # Süresi dolmuş ise
+            return None
+
+        # MCP tarafında ihtiyaç duyulabilecek tipik alanlar
+        return {
+            "client_id": token_data.get("client_id"),
+            "scope": token_data.get("scope", "mcp"),
+            "resource": token_data.get("resource", RESOURCE_ID),
+        }
+
+
+# ============================================================
+# OAuth endpoint'lerini FastAPI app'ine register eden fonksiyon
+# ============================================================
+
+def register_oauth_routes(app: FastAPI) -> None:
+    """
+    OAuth 2.0 / OIDC / Protected Resource endpoint'lerini FastAPI app'ine ekler.
+    ChatGPT Connector OAuth akışı ile uyumlu olacak şekilde tasarlanmıştır.
+    """
+
+    # --------------------------------------------------------
+    # 0) Protected Resource Metadata
+    # --------------------------------------------------------
     @app.get("/.well-known/oauth-protected-resource")
     async def protected_resource_metadata():
         return JSONResponse(
@@ -28,11 +89,13 @@ def register_oauth_routes(app):
                 "resource": RESOURCE_ID,
                 "authorization_servers": [BASE_URL],
                 "scopes_supported": ["mcp"],
-                "bearer_methods_supported": ["header"],
                 "resource_documentation": f"{BASE_URL}/docs",
             }
         )
 
+    # --------------------------------------------------------
+    # 1) Authorization Server Metadata / OIDC Metadata
+    # --------------------------------------------------------
     def _oauth_metadata_body():
         return {
             "issuer": BASE_URL,
@@ -57,12 +120,32 @@ def register_oauth_routes(app):
 
     @app.get("/oauth/jwks.json")
     async def jwks():
+        # Opaque token kullandığımız için burada gerçek key yok.
         return JSONResponse({"keys": []})
 
+    # --------------------------------------------------------
+    # 2) Dynamic Client Registration (RFC 7591)
+    # --------------------------------------------------------
     @app.post("/register")
     async def register_client(request: Request):
+        """
+        ChatGPT Connector'ın ilk bağlantıda çağırdığı endpoint.
+        Gelen JSON tipik olarak:
+        {
+            "redirect_uris": ["https://chatgpt.com/connector_platform_oauth_redirect"],
+            "client_name": "...",
+            ...
+        }
+        """
         payload = await request.json()
-        redirect_uris = payload.get("redirect_uris", [])
+        redirect_uris = payload.get("redirect_uris") or []
+        client_name = payload.get("client_name") or "ChatGPT Connector Client"
+
+        if not redirect_uris:
+            return JSONResponse(
+                {"error": "invalid_client_metadata", "error_description": "redirect_uris required"},
+                status_code=400,
+            )
 
         client_id = uuid.uuid4().hex
         client_secret = uuid.uuid4().hex
@@ -71,15 +154,15 @@ def register_oauth_routes(app):
             "client_id": client_id,
             "client_secret": client_secret,
             "redirect_uris": redirect_uris,
+            "client_name": client_name,
         }
-
-        logger.info(f"New client registered: {client_id}")
 
         return JSONResponse(
             {
                 "client_id": client_id,
                 "client_secret": client_secret,
                 "redirect_uris": redirect_uris,
+                "client_name": client_name,
                 "token_endpoint_auth_method": "client_secret_post",
                 "grant_types": ["authorization_code", "client_credentials"],
                 "response_types": ["code"],
@@ -87,8 +170,15 @@ def register_oauth_routes(app):
             }
         )
 
+    # --------------------------------------------------------
+    # 3) Authorization Endpoint (Authorization Code + PKCE)
+    # --------------------------------------------------------
     @app.get("/oauth/authorize")
     async def oauth_authorize(request: Request):
+        """
+        ChatGPT, kullanıcı adına authorization code almak için buraya gelir.
+        Biz prototip olduğu için kullanıcı ekranı göstermeden otomatik onay veriyoruz.
+        """
         qp = request.query_params
 
         client_id = qp.get("client_id")
@@ -99,32 +189,40 @@ def register_oauth_routes(app):
         code_challenge = qp.get("code_challenge")
         code_challenge_method = qp.get("code_challenge_method")
 
-        logger.info(f"Authorization request from client: {client_id}")
-
-        if not client_id or client_id not in CLIENTS:
+        # 1) client id kontrolü
+        client_info = CLIENTS.get(client_id or "")
+        if not client_id or not client_info:
             return PlainTextResponse("invalid client_id", status_code=400)
 
-        if redirect_uri not in CLIENTS[client_id]["redirect_uris"]:
+        # 2) redirect_uri doğrulaması
+        registered_redirects = client_info.get("redirect_uris") or []
+        # ChatGPT connector genellikle tam eşleşme gönderir, ama yine de startswith ile esnek olalım
+        if not redirect_uri or not any(redirect_uri.startswith(r) for r in registered_redirects):
             return PlainTextResponse("invalid redirect_uri", status_code=400)
 
+        # 3) Authorization code üret ve sakla
         code = _b64url_random()
         AUTH_CODES[code] = {
             "client_id": client_id,
             "redirect_uri": redirect_uri,
-            "resource": resource,
+            "resource": resource or RESOURCE_ID,
             "scope": scope,
             "code_challenge": code_challenge,
             "code_challenge_method": code_challenge_method,
-            "expires_at": time.time() + 300,
+            "created_at": _now(),
+            "expires_at": _now() + 300,  # 5 dakika
         }
 
+        # 4) Kullanıcı onayı simüle: direkt redirect ile code döndür
         redirect_with_code = f"{redirect_uri}?code={code}"
         if state:
             redirect_with_code += f"&state={state}"
 
-        logger.info(f"Authorization code generated for client: {client_id}")
         return RedirectResponse(redirect_with_code)
 
+    # --------------------------------------------------------
+    # 4) Token Endpoint (Authorization Code + Client Credentials)
+    # --------------------------------------------------------
     @app.post("/oauth/token")
     async def oauth_token(
         grant_type: str = Form(...),
@@ -135,128 +233,104 @@ def register_oauth_routes(app):
         resource: str = Form(None),
         code_verifier: str = Form(None),
     ):
-        logger.info(f"Token request: grant_type={grant_type}, client_id={client_id}")
+        """
+        Token endpoint:
+        - grant_type=authorization_code
+        - grant_type=client_credentials
+        """
 
+        # ----------------------------------------------------
+        # Authorization Code Flow
+        # ----------------------------------------------------
         if grant_type == "authorization_code":
-            if not client_id or client_id not in CLIENTS:
+            # Client doğrulaması
+            client_info = CLIENTS.get(client_id or "")
+            if not client_info or client_info.get("client_secret") != client_secret:
                 return JSONResponse({"error": "invalid_client"}, status_code=401)
 
-            if CLIENTS[client_id]["client_secret"] != client_secret:
-                return JSONResponse({"error": "invalid_client"}, status_code=401)
-
-            if code not in AUTH_CODES:
+            # Code doğrulaması
+            auth_data = AUTH_CODES.pop(code, None)
+            if not auth_data:
                 return JSONResponse({"error": "invalid_grant"}, status_code=400)
 
-            auth_data = AUTH_CODES.pop(code)
+            # Code süresi geçmiş mi?
+            if auth_data["expires_at"] < _now():
+                return JSONResponse({"error": "expired_code"}, status_code=400)
+
+            # Client ve redirect_uri eşleşiyor mu?
+            if auth_data["client_id"] != client_id:
+                return JSONResponse({"error": "invalid_grant"}, status_code=400)
 
             if redirect_uri != auth_data["redirect_uri"]:
                 return JSONResponse({"error": "invalid_grant"}, status_code=400)
 
-            if auth_data["client_id"] != client_id:
-                return JSONResponse({"error": "invalid_grant"}, status_code=400)
+            # PKCE doğrulaması (S256)
+            if auth_data.get("code_challenge"):
+                if not code_verifier:
+                    return JSONResponse({"error": "invalid_grant", "error_description": "code_verifier required"}, status_code=400)
 
-            if time.time() > auth_data["expires_at"]:
-                return JSONResponse({"error": "expired_code"}, status_code=400)
+                expected_challenge = auth_data["code_challenge"]
+                method = auth_data.get("code_challenge_method", "S256")
 
-            token = _b64url_random()
-            TOKENS[token] = {
+                if method != "S256":
+                    return JSONResponse({"error": "invalid_grant", "error_description": "unsupported code_challenge_method"}, status_code=400)
+
+                calculated = _pkce_s256(code_verifier)
+                if calculated != expected_challenge:
+                    return JSONResponse({"error": "invalid_grant", "error_description": "PKCE verification failed"}, status_code=400)
+
+            # Access token üret
+            access_token = _b64url_random()
+            expires_in = 3600
+
+            token_data = {
                 "client_id": client_id,
-                "resource": auth_data.get("resource"),
                 "scope": auth_data.get("scope", "mcp"),
-                "expires_at": time.time() + 3600,
+                "resource": auth_data.get("resource") or resource or RESOURCE_ID,
+                "created_at": _now(),
+                "expires_at": _now() + expires_in,
             }
-
-            logger.info(f"Access token generated for client: {client_id}")
+            TOKENS[access_token] = token_data
 
             return JSONResponse(
                 {
-                    "access_token": token,
+                    "access_token": access_token,
                     "token_type": "bearer",
-                    "expires_in": 3600,
-                    "scope": auth_data.get("scope", "mcp"),
+                    "expires_in": expires_in,
+                    "scope": token_data["scope"],
                 }
             )
 
+        # ----------------------------------------------------
+        # Client Credentials Flow (isteğe bağlı)
+        # ----------------------------------------------------
         elif grant_type == "client_credentials":
-            if not client_id or client_id not in CLIENTS:
+            client_info = CLIENTS.get(client_id or "")
+            if not client_info or client_info.get("client_secret") != client_secret:
                 return JSONResponse({"error": "invalid_client"}, status_code=401)
 
-            if CLIENTS[client_id]["client_secret"] != client_secret:
-                return JSONResponse({"error": "invalid_client"}, status_code=401)
+            access_token = _b64url_random()
+            expires_in = 3600
 
-            token = _b64url_random()
-            TOKENS[token] = {
+            token_data = {
                 "client_id": client_id,
-                "resource": RESOURCE_ID,
                 "scope": "mcp",
-                "expires_at": time.time() + 3600,
+                "resource": resource or RESOURCE_ID,
+                "created_at": _now(),
+                "expires_at": _now() + expires_in,
             }
-
-            logger.info(f"Access token generated (client_credentials) for client: {client_id}")
+            TOKENS[access_token] = token_data
 
             return JSONResponse(
                 {
-                    "access_token": token,
+                    "access_token": access_token,
                     "token_type": "bearer",
-                    "expires_in": 3600,
+                    "expires_in": expires_in,
                     "scope": "mcp",
                 }
             )
 
+        # ----------------------------------------------------
+        # Desteklenmeyen grant_type
+        # ----------------------------------------------------
         return JSONResponse({"error": "unsupported_grant_type"}, status_code=400)
-
-
-# ======================================================
-# OAuth Token Verifier for MCP
-# ======================================================
-from mcp.server.auth.provider import TokenVerifier as MCPTokenVerifier
-
-class CustomTokenVerifier(MCPTokenVerifier):
-
-    async def verify_token(self, token: str) -> dict:
-        logger.warning("MCP → verify_token() çağrıldı")      # ← EKLENDİ
-        logger.info(f"Verifying token: {token[:20] if token else 'None'}...")
-
-        # Token yoksa → OAuth discovery başlasın
-        if not token or token not in TOKENS:
-            logger.warning("MCP → verify_token(): token bulunamadı, 401 dönüyor")   # ← EKLENDİ
-            raise HTTPException(
-                status_code=401,
-                detail={
-                    "error": "invalid_token",
-                    "error_description": "Authentication required",
-                },
-                headers={
-                    "WWW-Authenticate": (
-                        f'Bearer resource_metadata="{BASE_URL}/.well-known/oauth-protected-resource"'
-                    )
-                },
-            )
-
-        token_data = TOKENS[token]
-
-        # Süresi geçmiş token
-        if time.time() > token_data["expires_at"]:
-            logger.warning("MCP → verify_token(): token expired")   # ← EKLENDİ
-            del TOKENS[token]
-            raise HTTPException(
-                status_code=401,
-                detail={
-                    "error": "invalid_token",
-                    "error_description": "Token expired",
-                },
-                headers={
-                    "WWW-Authenticate": (
-                        f'Bearer resource_metadata="{BASE_URL}/.well-known/oauth-protected-resource"'
-                    )
-                },
-            )
-
-        logger.warning("MCP → verify_token(): token doğrulandı")   # ← EKLENDİ
-
-        return {
-            "sub": token_data["client_id"],
-            "scope": token_data["scope"],
-            "resource": token_data.get("resource"),
-            "client_id": token_data["client_id"]
-        }

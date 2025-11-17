@@ -1,6 +1,8 @@
+# main.py
 from fastapi import FastAPI
 from mcp.server import FastMCP
 from mcp.server.auth.settings import AuthSettings
+
 import logging
 import time
 
@@ -8,49 +10,57 @@ from app.mcp_handlers import register_mcp
 from app.oauth import register_oauth_routes, CustomTokenVerifier
 from app.config import BASE_URL
 
-# Logging ayarla
+# ======================================================
+# Logging
+# ======================================================
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
 
-app = FastAPI()
+# ======================================================
+# FastAPI root app
+# ======================================================
+app = FastAPI(title="Ecommerce MCP Server")
 
 # ======================================================
-# OAuth Routes
+# OAuth Routes (ChatGPT uyumlu)
 # ======================================================
 register_oauth_routes(app)
 
 # ======================================================
-# OAuth Settings for MCP
+# MCP Auth Settings
 # ======================================================
 auth_settings = AuthSettings(
     issuer_url=BASE_URL,
-    resource_server_url=BASE_URL
+    resource_server_url=BASE_URL,
 )
 
 # ======================================================
-# MCP Server with OAuth
+# MCP Server
 # ======================================================
 mcp = FastMCP(
     name="ecommerce-mcp",
     token_verifier=CustomTokenVerifier(),
-    auth=auth_settings
+    auth=auth_settings,
 )
 
-# Tool'ları kaydet
+# Tool kayıtları
 register_mcp(mcp)
 
 # ======================================================
-# MCP SSE Mount
+# Mount SSE transport
 # ======================================================
+# ChatGPT connector’ın bağlanacağı yer:
+#   GET  /mcp/sse
+#   POST /mcp/messages
 app.mount("/mcp", mcp.sse_app())
 
 # ======================================================
-# Debug endpoints
+# Debug routes
 # ======================================================
-APP_VERSION = "1.0.1"
+APP_VERSION = "2.0.0"
 
 @app.get("/__routes__")
 async def debug_routes():
@@ -62,43 +72,43 @@ async def debug_routes():
 
 @app.get("/__debug/tokens")
 async def debug_tokens():
-    """Debug: Token store'u göster"""
+    """Access token store'u gösterir."""
     from app.oauth import TOKENS
     return {
         "token_count": len(TOKENS),
         "tokens": [
             {
-                "token": token[:20] + "...",
+                "token": token[:16] + "...",
                 "client_id": data["client_id"],
+                "scope": data["scope"],
                 "expires_in": int(data["expires_at"] - time.time())
             }
             for token, data in TOKENS.items()
         ]
     }
 
+
 @app.get("/__debug/clients")
 async def debug_clients():
-    """Debug: Kayıtlı client'ları göster"""
+    """Kayıtlı client'lar."""
     from app.oauth import CLIENTS
     return {
         "client_count": len(CLIENTS),
-        "clients": list(CLIENTS.keys())
+        "clients": CLIENTS
     }
 
+# ======================================================
+# Uvicorn
+# ======================================================
 if __name__ == "__main__":
     import uvicorn, os
 
     logger.info(f"Starting MCP server at {BASE_URL}")
-    logger.info(f"OAuth metadata: {BASE_URL}/.well-known/oauth-authorization-server")
-    logger.info(f"MCP SSE endpoint: {BASE_URL}/mcp/sse")
+    logger.info(f"OAuth server metadata: {BASE_URL}/.well-known/oauth-authorization-server")
+    logger.info(f"MCP SSE endpoint:       {BASE_URL}/mcp/sse")
 
-    #ssl_certfile = "./wsoakdeniz.tailc4b778.ts.net.crt"
-    #ssl_keyfile = "./wsoakdeniz.tailc4b778.ts.net.key"
-    
     uvicorn.run(
         "main:app",
         host="0.0.0.0",
         port=int(os.getenv("PORT", 8000))
-        #ssl_certfile=ssl_certfile,
-        #ssl_keyfile=ssl_keyfile
     )
