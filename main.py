@@ -6,47 +6,41 @@ from app.mcp_handlers import register_mcp
 
 
 # =====================================================
-# 1) MCP Server Tanımı
+# 1) MCP Server
 # =====================================================
 mcp = FastMCP(
     name="ecommerce-mcp",
-    sse_path="/sse",
-    message_path="/messages",
+    sse_path="/mcp/sse",
+    message_path="/mcp/messages",
     stateless_http=True
 )
 
-# =====================================================
-# 2) FastAPI Ana App
-# =====================================================
+# FastAPI app
 app = FastAPI()
 
-# MCP Streamable HTTP uygulamasını oluştur
+# =====================================================
+# 2) MCP ROUTELARINI FASTAPI İÇİNE EKLE
+# =====================================================
 mcp_app = mcp.streamable_http_app()
 
-# Azure dahil tüm ortamlar için doğru mount
-# Bu yapı ile gerçek endpoint'ler:
-#   /mcp/sse
-#   /mcp/messages
-app.mount("/mcp", mcp_app)
+# mcp_app içindeki tüm route’ları FastAPI’ye manuel ekle
+for route in mcp_app.router.routes:
+    app.router.routes.append(route)
 
 # =====================================================
-# 3) OAuth + API + MCP Tool Kayıtları
+# 3) Normal API + OAuth + MCP Tools
 # =====================================================
 register_api_routes(app)
 register_mcp(mcp)
 
 # =====================================================
-# 4) Debug Endpoint — Tüm route’ları gösterir
+# 4) Debug route
 # =====================================================
 @app.get("/__routes__")
 async def debug_routes():
     return [route.path for route in app.router.routes]
 
 
-# =====================================================
-# 5) Local run
-# =====================================================
 if __name__ == "__main__":
     import uvicorn, os
-    port = int(os.getenv("PORT", "8000"))
-    uvicorn.run("main:app", host="0.0.0.0", port=port)
+    uvicorn.run("main:app", host="0.0.0.0", port=int(os.getenv("PORT", 8000)))
