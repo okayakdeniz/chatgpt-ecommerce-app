@@ -4,41 +4,49 @@ from mcp.server.fastmcp import FastMCP
 from app.routes import register_api_routes
 from app.mcp_handlers import register_mcp
 
+# =====================================================
+# 1) FastAPI app
+# =====================================================
+app = FastAPI()
 
 # =====================================================
-# 1) MCP Server
+# 2) MCP Server (stateless_http OLMADAN)
 # =====================================================
 mcp = FastMCP(
     name="ecommerce-mcp",
     sse_path="/mcp/sse",
-    message_path="/mcp/messages",
-    stateless_http=True
+    message_path="/mcp/messages"
+    # stateless_http=True <- BUNU KALDIR!
 )
 
-# FastAPI app
-app = FastAPI()
+# MCP tools'u kaydet
+register_mcp(mcp)
 
 # =====================================================
-# 2) MCP ROUTELARINI FASTAPI İÇİNE EKLE
+# 3) MCP route'larını ÖNCE ekle
 # =====================================================
-mcp_app = mcp.streamable_http_app()
+mcp_app = mcp.streamable_http_app()  # <-- DOĞRU METOD
 
-# mcp_app içindeki tüm route’ları FastAPI’ye manuel ekle
+# Debug için
+print("\n=== MCP Routes ===")
+for route in mcp_app.router.routes:
+    print(f"  {route.path}")
+
+# MCP route'larını ekle
 for route in mcp_app.router.routes:
     app.router.routes.append(route)
 
 # =====================================================
-# 3) Normal API + OAuth + MCP Tools
+# 4) SONRA Normal API routes
 # =====================================================
 register_api_routes(app)
-register_mcp(mcp)
 
 # =====================================================
-# 4) Debug route
+# 5) Debug route
 # =====================================================
 @app.get("/__routes__")
 async def debug_routes():
-    return [route.path for route in app.router.routes]
+    return [{"path": route.path} for route in app.router.routes]
 
 
 if __name__ == "__main__":
